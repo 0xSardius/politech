@@ -1,51 +1,84 @@
-# CLAUDE.md
+# CLAUDE.md — Politech
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Project context for Claude Code. Read this before generating or changing code.
 
-## Project status
+## What this is
+Politech is a Farcaster agent (+ light mini app) for the **/politics** channel.
+It ingests many trusted independent news sources, **clusters coverage of the same
+event across sources**, and posts **concise comparative meta-analysis** in its own
+voice. The source set is community-curated, so the editorial lens is decentralized.
+See `docs/Politech_PRD.md` for the full vision and `docs/Politech_Implementation_Plan.md`
+for the build order.
 
-**Pre-implementation.** This repo currently contains only documentation — no code has been scaffolded yet. The build should follow `docs/Politech_Implementation_Plan.md` (the *how*, written specifically to be handed to Claude Code) and `docs/Politech_PRD.md` (the *what/why*). Read the implementation plan before building anything.
+`docs/neynar-docs-full.txt.txt` (~2MB) and `docs/farcaster-docs.txt.txt` are offline
+dumps of the Neynar and Farcaster docs — **Grep these for API shapes rather than
+guessing** (endpoints, param names, response fields).
 
-Reference material: `docs/neynar-docs-full.txt.txt` (~2MB) and `docs/farcaster-docs.txt.txt` are offline dumps of the Neynar and Farcaster docs — search these (Grep) rather than guessing API shapes.
+## Current scope (do NOT exceed without being asked)
+Build only the **MVP**:
+- **Agent (Tier 0):** ingest → filter → cluster → dedupe → commentary → publish.
+- **Mini app (Tier 1):** a light Next.js feed of the agent's casts + one basic poll.
 
-## What Politech is
+Out of scope right now: governance/quadratic voting, member profiles, the
+tag-to-ask conversational agent, style-RAG, matchmaking/location, empire score,
+rewards. Architect so these *can* be added later, but do not build them.
 
-A Farcaster agent for the /politics channel that ingests many sources (RSS, YouTube per-channel RSS, outlet Farcaster accounts, prediction markets), clusters same-event coverage, and posts **original comparative meta-analysis casts** instead of reposting links. MVP = the agent (Tier 0) + a light Next.js mini app (Tier 1). Governance/QV voting, profiles, tag-to-ask, and matchmaking are explicitly out of scope for this build but the architecture must not foreclose them.
+Build order (implementation plan §4): **M0** shared contract + Store → **M1**
+publish a test cast → **M2** ingestion + filters → **M3** cluster + dedupe +
+commentary → **M4** Policast + cron (agent is shippable alone here) → **M5** mini
+app. Lock the contract (M0) before anything else.
 
 ## Architecture
-
-Three pieces separated by one shared contract so they can be built in parallel:
-
-- **Agent** (Node + tsx, `apps/agent/`): `ingest → filter → cluster → dedupe → commentary → publish`
-- **Store** (the boundary; JSON file week 1 → Postgres at launch): agent writes, mini app reads. Interface: `hasSeen / markSeen / saveItem / listItems / listPolls / votePoll`
-- **Mini app** (Next.js 14 App Router + `@farcaster/miniapp-sdk`, `apps/miniapp/`): renders the feed, runs one poll
-
-The keystone is `packages/shared/contract.ts` (`PolitechItem`, `PolitechPoll`, `SourceRef` types — full definitions in the implementation plan §2). **Lock the contract first (milestone M0)**; both apps import it.
-
-Build order: M0 contract+store → M1 publish → M2 ingestion+filters → M3 cluster+dedupe+commentary → M4 Policast+cron (agent shippable alone) → M5 mini app.
+Three parts separated by one shared contract (`packages/shared/contract.ts`):
+- **Agent** writes `PolitechItem`/`PolitechPoll` to the **Store**.
+- **Mini app** reads them from the Store via its API routes.
+Treat the contract as the only coupling between agent and mini app.
 
 ## Stack
+- Agent: Node + TypeScript (tsx), `@neynar/nodejs-sdk` v2, `rss-parser`, Anthropic SDK.
+- Store: JSON file for week 1, Postgres for launch — behind a `Store` interface.
+- Mini app: Next.js 14 App Router + `@farcaster/miniapp-sdk` (official Farcaster
+  SDK — do NOT use MiniKit/OnchainKit). wagmi/viem + `@farcaster/miniapp-wagmi-connector`
+  are added only when Phase 2 wallet work begins.
+- Hosting: Vercel (mini app + cron); PM2 box is the alt for the agent loop.
 
-| Concern | Choice |
-|---|---|
-| Agent runtime | Node + tsx (TypeScript) |
-| Farcaster | `@neynar/nodejs-sdk` v2 |
-| Feeds | `rss-parser` (RSS + YouTube per-channel RSS) |
-| Commentary | Anthropic SDK |
-| Mini app | Next.js 14 App Router + `@farcaster/miniapp-sdk` — **no MiniKit/OnchainKit** (wagmi/viem + `@farcaster/miniapp-wagmi-connector` only in Phase 2) |
-| Hosting | Vercel (cron + mini app) |
+## Conventions
+- TypeScript everywhere; ES modules.
+- All persistence goes through the `Store` interface — no direct DB calls in
+  business logic. This keeps JSON↔Postgres swappable and keeps voting upgradeable.
+- The mini app must work inside Farcaster clients: call `sdk.actions.ready()` once
+  loaded, read the user from `sdk.context`, and use `sdk.quickAuth`/`sdk.actions.signIn`
+  for any write (e.g. poll votes) so the server gets a verified FID — no custom login.
+- Keep modules single-purpose (one file per pipeline stage) for clean handoffs.
 
-Env vars: `NEYNAR_API_KEY`, `POLITECH_SIGNER_UUID`, `ANTHROPIC_API_KEY`, `POLITECH_RUN_LOOP` (true=loop, false=single cron pass), `DATABASE_URL`; mini app: `NEXT_PUBLIC_URL`. The mini app's Farcaster identity lives in `/.well-known/farcaster.json` (signed `accountAssociation`), not env vars.
+## Hard rules (these are correctness, not style)
+1. **Farcaster replies:** filter on `parent_hash` (null = top-level), NEVER on
+   `parent_url`. Channel posts have `parent_url` set but `parent_hash` null.
+2. **Quote casts:** drop casts whose `embeds` contain a cast object (not a URL).
+3. **Copyright:** commentary paraphrases and links out. Never reproduce article or
+   cast text verbatim, including in meta-analysis. Quotes, if ever, are minimal.
+4. **Prediction markets (Policast):** report the signal and invite discussion.
+   Never phrase as betting/financial advice.
+5. **Dedup is clustering:** the layer that prevents double-posting is the same one
+   that groups sources for meta-analysis. Build it as clustering from the start.
+6. **Casting target:** publish to the channel with
+   `publishCast({ signerUuid, text, embeds:[{url}], channelId:'politics' })`;
+   the source URL in `embeds` drives the rich preview.
+7. **Idempotency:** set `idem: item.clusterId` on `publishCast` so a retry can't
+   double-post the same story — cheap insurance on top of the dedup store.
+8. **Ingestion endpoint:** use `client.fetchCastsForUser({ fid })`
+   (`/v2/farcaster/feed/user/casts/`) — never `/feed/user/replies_and_recasts/`.
+9. **Neynar SDK v2:** the reply param is `parent` (was `replyTo` in v1). Init:
+   `new NeynarAPIClient(new Configuration({ apiKey }))`.
+10. **YouTube filter:** skip Shorts and livestream notices.
 
-## Gotchas (these cost time if missed)
+## Commands (expected)
+- Agent: `npm run once` (single pass), `npm start` (loop).
+- Mini app: `npm run dev`, `npm run build`.
 
-- **Reply filter:** keep top-level casts via `parent_hash === null` — NOT `parent_url`. Channel posts set `parent_url` to the channel while `parent_hash` stays null; filtering on `parent_url` wrongly drops legitimate channel posts.
-- **Quote casts:** detect via an embedded *cast* in `embeds` (`e.cast || e.cast_id`), not a URL embed.
-- **Ingestion endpoint:** use `client.fetchCastsForUser({ fid })` (`/v2/farcaster/feed/user/casts/`) — never `/feed/user/replies_and_recasts/`.
-- **Idempotency:** set `idem: item.clusterId` on `publishCast` so retries can't double-post; this stacks on top of the dedup store.
-- **Neynar SDK v2 rename:** the reply param is `parent` (was `replyTo` in v1). Init: `new NeynarAPIClient(new Configuration({ apiKey }))`.
-- **Dedup IS clustering:** build the dedup layer as same-event clustering from day one (canonical-URL match or title overlap in a time window) — it's the same code that powers meta-analysis. Don't write a throwaway URL set.
-- **Copyright:** commentary must paraphrase in Politech's own voice and link out; never reproduce article text, even in meta-analysis. 1 source → story take, ≥2 sources in a cluster → one comparative cast.
-- **Prediction markets:** frame as signal/discussion ("the market is pricing X at Y — thoughts?"), never betting advice.
-- **YouTube filter:** skip Shorts and livestream notices.
-- **Phase-2 readiness:** keep poll voting behind `Store.votePoll`; call `sdk.actions.ready()` and read `sdk.context` from day one; use `sdk.quickAuth` / `sdk.actions.signIn` so poll POSTs carry a *verified* FID, not client-supplied context.
+## Env
+See `.env.example`. Agent needs `NEYNAR_API_KEY`, `POLITECH_SIGNER_UUID`,
+`ANTHROPIC_API_KEY`, `POLITECH_RUN_LOOP` (true=loop, false=single cron pass), and
+`DATABASE_URL` once Postgres lands. The mini app needs no vendor API key — its
+Farcaster identity is the `accountAssociation` in `/.well-known/farcaster.json` on
+its domain, signed by the Politech account via the Farcaster developer tools.
