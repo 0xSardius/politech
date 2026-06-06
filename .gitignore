@@ -1,0 +1,19 @@
+# deps
+node_modules/
+
+# env — never commit secrets
+.env
+.env.local
+.env*.local
+
+# build output
+dist/
+.next/
+.vercel/
+*.tsbuildinfo
+
+# local store (JSON-file Store impl)
+data/
+
+# misc
+.DS_Store

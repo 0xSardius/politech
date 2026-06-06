@@ -35,7 +35,10 @@ Three parts separated by one shared contract (`packages/shared/contract.ts`):
 Treat the contract as the only coupling between agent and mini app.
 
 ## Stack
-- Agent: Node + TypeScript (tsx), `@neynar/nodejs-sdk` v2, `rss-parser`, Anthropic SDK.
+- Agent: Node + TypeScript (tsx), `@neynar/nodejs-sdk` **v3** (installed; the docs
+  dump and implementation plan say v2 — v3 kept the same `publishCast` params:
+  `signerUuid`, `text`, `embeds`, `channelId`, `idem`, `parent`), `rss-parser`,
+  Anthropic SDK. npm workspaces monorepo.
 - Store: JSON file for week 1, Postgres for launch — behind a `Store` interface.
 - Mini app: Next.js 14 App Router + `@farcaster/miniapp-sdk` (official Farcaster
   SDK — do NOT use MiniKit/OnchainKit). wagmi/viem + `@farcaster/miniapp-wagmi-connector`
@@ -68,13 +71,23 @@ Treat the contract as the only coupling between agent and mini app.
    double-post the same story — cheap insurance on top of the dedup store.
 8. **Ingestion endpoint:** use `client.fetchCastsForUser({ fid })`
    (`/v2/farcaster/feed/user/casts/`) — never `/feed/user/replies_and_recasts/`.
-9. **Neynar SDK v2:** the reply param is `parent` (was `replyTo` in v1). Init:
-   `new NeynarAPIClient(new Configuration({ apiKey }))`.
+9. **Neynar SDK v3:** the reply param is `parent` (was `replyTo` in v1). Init:
+   `new NeynarAPIClient(new Configuration({ apiKey }))`. The generated
+   `PostCastReqBodyEmbeds` type wrongly requires `cast_id`+`castId`+`url`
+   together (flattened anyOf) — cast a `{ url }` object to it; the API accepts
+   `{ url }` alone.
 10. **YouTube filter:** skip Shorts and livestream notices.
 
-## Commands (expected)
-- Agent: `npm run once` (single pass), `npm start` (loop).
-- Mini app: `npm run dev`, `npm run build`.
+## Commands
+Run from the repo root (npm workspaces):
+- `npm run once` — single agent pass (cron mode)
+- `npm run agent` — agent loop (every 15 min)
+- `npm run typecheck` — typecheck all workspaces
+- Mini app (M5): `npm run dev` / `npm run build` in `apps/miniapp`.
+
+`POLITECH_DRY_RUN` defaults to true — the pipeline logs instead of casting.
+Set it to `false` only when output is trustworthy. `POLITECH_CHANNEL_ID` lets
+you point at a test channel while iterating.
 
 ## Env
 See `.env.example`. Agent needs `NEYNAR_API_KEY`, `POLITECH_SIGNER_UUID`,
